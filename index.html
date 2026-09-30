@@ -60,6 +60,9 @@ section[hidden]{display:none}
 .toolbar input[type=search]{flex:1 1 220px;min-width:180px}
 .field,.toolbar input,.toolbar select{background:#fff;border:1px solid var(--line);border-radius:8px;padding:8px 10px}
 .toolbar select{max-width:210px}
+.toolbar #fHotel{flex:0 1 230px;min-width:170px}
+.meta-line .solo{display:inline-flex;align-items:center;gap:6px;font-size:13px;color:var(--muted);margin-right:auto;margin-left:14px;cursor:pointer}
+.meta-line .solo[hidden]{display:none}
 .btn{border:1px solid var(--navy);background:#fff;color:var(--navy);border-radius:8px;padding:8px 14px;font-weight:600;display:inline-flex;align-items:center;gap:6px}
 .btn.primary{background:var(--navy);color:#fff}
 .btn.gold{background:var(--gold);border-color:var(--gold);color:#fff}
@@ -235,6 +238,8 @@ legend{font-weight:700;color:var(--navy);margin-bottom:8px;font-size:14px}
     <div class="toolbar">
       <input type="search" id="fQ" placeholder="Buscar pendiente, acción, responsable…" aria-label="Buscar">
       <select id="fProyecto" aria-label="Proyecto"></select>
+      <input type="search" id="fHotel" list="dlHotel" placeholder="Buscar hotel o complejo…" aria-label="Buscar hotel o complejo" autocomplete="off">
+      <datalist id="dlHotel"></datalist>
       <select id="fPropiedad" aria-label="Propiedad"></select>
       <select id="fEstado" aria-label="Estado"></select>
       <select id="fPrioridad" aria-label="Prioridad"></select>
@@ -247,7 +252,7 @@ legend{font-weight:700;color:var(--navy);margin-bottom:8px;font-size:14px}
       <button class="btn gold" id="btnNew" type="button">+ Nuevo pendiente</button>
       <button class="btn primary" id="btnExport" type="button">Exportar Word / PDF</button>
     </div>
-    <p class="meta-line"><span id="countTxt"></span><button class="linkbtn" id="btnClear" type="button">Limpiar filtros</button></p>
+    <p class="meta-line"><span id="countTxt"></span><label class="solo" id="soloWrap" hidden><input type="checkbox" id="fSolo"> Solo pendientes exclusivos de esa propiedad / complejo</label><button class="linkbtn" id="btnClear" type="button">Limpiar filtros</button></p>
     <div class="list" id="list"></div>
   </section>
 
@@ -483,16 +488,47 @@ async function sync(){
 }
 
 /* ============ Filtros ============ */
-const F = { q:'', proyecto:'', propiedad:'', estado:'', prioridad:'', quick:'', sort:'id' };
+const F = { q:'', hotel:'', solo:false, proyecto:'', propiedad:'', estado:'', prioridad:'', quick:'', sort:'id' };
+const COMPLEJO_TXT = { IOR:'complejo ior', VARALLO:'complejo varallo', VAL5:'5 propiedades de validación' };
+const norm = t => String(t||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').trim();
+function hotelOptions(){
+  const o = [];
+  ['IOR','VARALLO','VAL5'].forEach(g => o.push([GRUPO_LBL[g], GRUPOS[g]]));
+  PROPS.forEach(([c, n]) => o.push([`${c} – ${n}`, [c]]));
+  return o;
+}
+/* Si el texto coincide con una opción de la lista, devuelve sus códigos */
+function hotelCodes(txt){
+  const t = norm(txt); if(!t) return null;
+  const hit = hotelOptions().find(([lbl]) => norm(lbl) === t);
+  if(hit) return hit[1];
+  const g = {ior:'IOR','complejo ior':'IOR',varallo:'VARALLO','complejo varallo':'VARALLO'}[t];
+  if(g) return GRUPOS[g];
+  const p = PROPS.find(([c, n]) => norm(c) === t || norm(n) === t);
+  return p ? [p[0]] : null;
+}
+function hotelHay(i){
+  const c = i.propiedades || [];
+  const g = Object.keys(COMPLEJO_TXT).filter(k => GRUPOS[k].some(x => c.includes(x))).map(k => COMPLEJO_TXT[k] + ' ' + k);
+  return norm([c.join(' '), c.map(x => PNAME[x]).join(' '), g.join(' '), i.area].join(' '));
+}
+function matchCodes(i, codes){
+  const c = i.propiedades || [];
+  if(!codes.some(x => c.includes(x))) return false;
+  return !F.solo || c.every(x => codes.includes(x));
+}
+function selCodes(){ return !F.propiedad ? null : F.propiedad.startsWith('g:') ? GRUPOS[F.propiedad.slice(2)] : [F.propiedad]; }
 const allItems = () => Object.values(S.items).filter(i => !i._deleted);
-function filtered(){
+function filtered(ignoreQuick = false){
   const q = F.q.trim().toLowerCase();
+  const sc = selCodes(), hc = hotelCodes(F.hotel), ht = norm(F.hotel);
   let arr = allItems().filter(i =>
     (!F.proyecto || i.proyecto === F.proyecto) &&
-    (!F.propiedad || (F.propiedad.startsWith('g:') ? GRUPOS[F.propiedad.slice(2)].some(c => (i.propiedades||[]).includes(c)) : (i.propiedades||[]).includes(F.propiedad))) &&
+    (!sc || matchCodes(i, sc)) &&
+    (!ht || (hc ? matchCodes(i, hc) : hotelHay(i).includes(ht))) &&
     (!F.estado || i.estado === F.estado) &&
     (!F.prioridad || i.prioridad === F.prioridad) &&
-    (!F.quick || (F.quick === 'abiertos' && i.estado !== 'Completado') || (F.quick === 'vencidos' && isLate(i)) || (F.quick === 'alta' && i.prioridad === 'Alta' && i.estado !== 'Completado') || (F.quick === 'completados' && i.estado === 'Completado') || (F.quick === 'fotos' && i.fotos?.length)) &&
+    (ignoreQuick || !F.quick || (F.quick === 'abiertos' && i.estado !== 'Completado') || (F.quick === 'vencidos' && isLate(i)) || (F.quick === 'alta' && i.prioridad === 'Alta' && i.estado !== 'Completado') || (F.quick === 'completados' && i.estado === 'Completado') || (F.quick === 'fotos' && i.fotos?.length)) &&
     (!q || [i.id,i.proyecto,propText(i),(i.propiedades||[]).map(c => PNAME[c]).join(' '),i.pendiente,i.accion,i.responsable,i.observaciones,i.seguimiento].join(' ').toLowerCase().includes(q))
   );
   const s = F.sort;
@@ -506,6 +542,8 @@ function filterDesc(){
   const p = [];
   if(F.proyecto) p.push('Proyecto: ' + F.proyecto);
   if(F.propiedad) p.push('Propiedad: ' + (F.propiedad.startsWith('g:') ? GRUPO_LBL[F.propiedad.slice(2)] : `${F.propiedad} (${PNAME[F.propiedad]})`));
+  if(F.hotel) p.push('Hotel / complejo: "' + F.hotel + '"');
+  if(F.solo && (F.propiedad || hotelCodes(F.hotel))) p.push('Solo exclusivos');
   if(F.estado) p.push('Estado: ' + F.estado);
   if(F.prioridad) p.push('Prioridad: ' + F.prioridad);
   if(F.quick) p.push({abiertos:'Solo abiertos', vencidos:'Solo vencidos', alta:'Prioridad alta abiertos', completados:'Solo completados', fotos:'Con evidencias'}[F.quick]);
@@ -527,12 +565,14 @@ function renderFilters(){
     <optgroup label="Propiedades">${PROPS.map(([c, n]) => `<option value="${c}" ${F.propiedad===c?'selected':''}>${c} – ${esc(n)}</option>`).join('')}</optgroup>`;
   fillSelect($('#fEstado'), 'Todos los estados', ESTADOS, F.estado);
   fillSelect($('#fPrioridad'), 'Todas las prioridades', PRIORIDADES, F.prioridad);
+  $('#dlHotel').innerHTML = [...hotelOptions().map(o => o[0]), ...uniq('area')].map(v => `<option value="${esc(v)}">`).join('');
   $('#dlProyecto').innerHTML = uniq('proyecto').map(v => `<option value="${esc(v)}">`).join('');
   $('#dlArea').innerHTML = uniq('area').map(v => `<option value="${esc(v)}">`).join('');
   $('#dlResponsable').innerHTML = uniq('responsable').map(v => `<option value="${esc(v)}">`).join('');
 }
 function renderKpis(){
-  const it = allItems();
+  const it = filtered(true);
+  $('#soloWrap').hidden = !(F.propiedad || hotelCodes(F.hotel));
   const k = [
     ['abiertos', it.filter(i => i.estado !== 'Completado').length, 'Abiertos', ''],
     ['vencidos', it.filter(isLate).length, 'Vencidos', 'late'],
@@ -879,9 +919,11 @@ $$('.tab').forEach(t => t.addEventListener('click', () => {
   $$('main > section').forEach(s => s.hidden = s.id !== 'tab-' + t.dataset.tab);
 }));
 const bindF = (sel, key, ev = 'change') => $(sel).addEventListener(ev, e => { F[key] = e.target.value; renderKpis(); renderList(); });
-bindF('#fQ', 'q', 'input'); bindF('#fProyecto', 'proyecto'); bindF('#fPropiedad', 'propiedad'); bindF('#fEstado', 'estado'); bindF('#fPrioridad', 'prioridad'); bindF('#fSort', 'sort');
+bindF('#fQ', 'q', 'input'); bindF('#fHotel', 'hotel', 'input');
+$('#fSolo').addEventListener('change', e => { F.solo = e.target.checked; renderKpis(); renderList(); });
+ bindF('#fProyecto', 'proyecto'); bindF('#fPropiedad', 'propiedad'); bindF('#fEstado', 'estado'); bindF('#fPrioridad', 'prioridad'); bindF('#fSort', 'sort');
 $('#kpis').addEventListener('click', e => { const b = e.target.closest('[data-quick]'); if(!b) return; F.quick = F.quick === b.dataset.quick ? '' : b.dataset.quick; renderKpis(); renderList(); });
-$('#btnClear').addEventListener('click', () => { Object.assign(F, {q:'', proyecto:'', propiedad:'', estado:'', prioridad:'', quick:''}); $('#fQ').value = ''; renderAll(); });
+$('#btnClear').addEventListener('click', () => { Object.assign(F, {q:'', hotel:'', solo:false, proyecto:'', propiedad:'', estado:'', prioridad:'', quick:''}); $('#fQ').value = ''; $('#fHotel').value = ''; $('#fSolo').checked = false; renderAll(); });
 $('#list').addEventListener('click', e => { const r = e.target.closest('.row[data-id]'); if(r) openItem(r.dataset.id); });
 $('#list').addEventListener('keydown', e => { const r = e.target.closest('.row[data-id]'); if(r && (e.key === 'Enter' || e.key === ' ')){ e.preventDefault(); openItem(r.dataset.id); } });
 $('#btnNew').addEventListener('click', () => openItem(null));
